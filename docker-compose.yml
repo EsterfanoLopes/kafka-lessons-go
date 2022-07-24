@@ -1,0 +1,133 @@
+version: "3"
+
+services:
+  zk:
+    image: zookeeper:3.7.0
+    hostname: zk
+    restart: unless-stopped
+    volumes:
+      - zk:/data
+      - zklog:/datalog
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_SERVERS: server.1=zk:2888:3888;2181
+    healthcheck:
+      test: ["CMD", "bin/zkCli.sh", "-server", "zk"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: debezium/kafka:1.9.5.Final
+    hostname: kafka
+    restart: unless-stopped
+    ports:
+      - "29092:29092"
+      - "9092:9092"
+    volumes:
+      - kafka:/kafka/data
+    environment:
+      BROKER_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://127.0.0.1:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      ZOOKEEPER_CONNECT: zk:2181
+    depends_on:
+      - zk
+    healthcheck:
+      test: ["CMD", "bash", "-c", "unset", "JMX_PORT", ":", "kafka-topics.sh", "--zookeeper", "zk:2181", "--list"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    hostname: kafka-ui
+    restart: unless-stopped
+    ports:
+      - "28080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zk:2181
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: kafka-connect
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
+    depends_on:
+      - kafka
+
+  kafka-connect:
+    image: debezium/connect:1.7.2.Final
+    hostname: kafka-connect
+    restart: unless-stopped
+    ports:
+      - "28083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      CONFIG_STORAGE_TOPIC: config_storage
+      OFFSET_STORAGE_TOPIC: offset_storage
+      STATUS_STORAGE_TOPIC: status_storage
+    depends_on:
+      - kafka
+
+  schema-registry:
+   image: confluentinc/cp-schema-registry:5.5.10
+   container_name: schema
+   restart: always
+   depends_on:
+     - zk
+     - kafka
+   environment:
+     - SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL=zk:2181
+     - SCHEMA_REGISTRY_HOST_NAME=schema-registry
+     - SCHEMA_REGISTRY_LISTENERS=http://0.0.0.0:8081
+     - SCHEMA_REGISTRY_ACCESS_CONTROL_ALLOW_METHODS=GET,POST,PUT,OPTIONS
+     - SCHEMA_REGISTRY_ACCESS_CONTROL_ALLOW_ORIGIN='*'
+   ports:
+     - "8081:8081"
+
+  schema-registry-ui:
+   image: landoop/schema-registry-ui
+   restart: always
+   environment:
+     SCHEMAREGISTRY_URL: http://schema:8081/
+     PROXY: "true"
+     ALLOW_DELETION: 1
+   ports:
+     - '8000:8000'
+   depends_on:
+     - schema-registry
+
+
+  database-postgres:
+    image: debezium/postgres:13-alpine
+    hostname: database-postgres
+    restart: unless-stopped
+    ports:
+      - "25432:5432"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: username
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: database
+    command: ["postgres", "-c", "wal_level=logical"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "username", "-d", "database"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  zk: {}
+  zklog: {}
+  kafka: {}
+  postgres: {}
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.2.0/24
