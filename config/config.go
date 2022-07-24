@@ -1,8 +1,14 @@
 package config
 
-import "github.com/Shopify/sarama"
+import (
+	"fmt"
+	"log"
+
+	"github.com/Shopify/sarama"
+)
 
 var Cfg *Config
+var Logger *log.Logger
 
 type Config struct {
 	Addresses    []string
@@ -18,6 +24,10 @@ func KafkaInit() {
 	}
 
 	c := sarama.NewConfig()
+	c.Producer.Return.Successes = true
+	c.Producer.Return.Errors = true
+	c.Producer.Flush.Messages = 1
+
 	cfg := Config{
 		SaramaConfig: c,
 		Addresses: []string{
@@ -26,4 +36,9 @@ func KafkaInit() {
 	}
 
 	Cfg = &cfg
+
+	err := Cfg.SaramaConfig.Validate()
+	if err != nil {
+		panic(fmt.Sprintf("error on kafka setup %s", err))
+	}
 }

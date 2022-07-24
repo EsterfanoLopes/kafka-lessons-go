@@ -16,8 +16,12 @@ import (
 type Producer struct {
 	AsyncClient         sarama.AsyncProducer
 	ErrorChan           chan error
-	ProductionWaitGroup sync.WaitGroup
+	ProductionWaitGroup *sync.WaitGroup
 	NumberOfMessages    int
+	EnqueuedCount       int
+	SentCount           int
+	SuccessCount        int
+	FailureCount        int
 }
 
 const (
@@ -33,7 +37,7 @@ func InitProducerConfig() Producer {
 	var (
 		productionWaitGroup sync.WaitGroup
 
-		errorChan = make(chan error)
+		errorChan = make(chan error, 1)
 	)
 
 	asyncProducer, err := sarama.NewAsyncProducer(config.Cfg.Addresses, config.Cfg.SaramaConfig)
@@ -44,57 +48,67 @@ func InitProducerConfig() Producer {
 	return Producer{
 		AsyncClient:         asyncProducer,
 		ErrorChan:           errorChan,
-		ProductionWaitGroup: productionWaitGroup,
+		ProductionWaitGroup: &productionWaitGroup,
 		NumberOfMessages:    numberOfMessages,
 	}
 }
 
 func main() {
 	config.KafkaInit()
-	producerConfig := InitProducerConfig()
+	p := InitProducerConfig()
 
 	/* Routines */
 	// To listen for errors
-	go listenForErrors(producerConfig.AsyncClient, &producerConfig.ProductionWaitGroup, producerConfig.ErrorChan)
+	go listenForErrors(p)
 	// To listen for successes
-	go listenForSuccess(producerConfig.AsyncClient, &producerConfig.ProductionWaitGroup)
+	go listenForSuccess(p)
 	// To Produce
-	for i := 0; i < producerConfig.NumberOfMessages; i++ {
-		go produce(producerConfig.AsyncClient, &producerConfig.ProductionWaitGroup, producerConfig.ErrorChan)
+	for i := 0; i < p.NumberOfMessages; i++ {
+		// increment wait group who controls producer messages
+		p.ProductionWaitGroup.Add(1)
+		go produce(p)
 	}
 
+	go func() {
+		time.Sleep(time.Second * 5)
+		go shutdown(p)
+	}()
+
+	p.ProductionWaitGroup.Wait()
 	// Shutdown
-	producerConfig.ProductionWaitGroup.Wait()
-	go stop(producerConfig)
+	go shutdown(p)
 }
 
-func stop(p Producer) {
+func shutdown(p Producer) {
 	p.AsyncClient.AsyncClose()
 	close(InitProducerConfig().ErrorChan)
 
-	fmt.Printf("Done without errors")
+	fmt.Printf("\n\nFinishing: \nenqueued:%d\nsent:%d\nsuccesses:%d\nfailures:%d", p.EnqueuedCount, p.SentCount, p.SuccessCount, p.FailureCount)
 	os.Exit(0)
 }
 
 // listenForErrors waits on error channels, prints it if received.
-func listenForErrors(asyncProducer sarama.AsyncProducer, pwg *sync.WaitGroup, producerErrorChan chan error) {
-	select {
-	case err := <-asyncProducer.Errors():
-		fmt.Println(err)
-		pwg.Done()
-	case err := <-producerErrorChan:
-		fmt.Println(err)
+func listenForErrors(p Producer) {
+	go func() {
+		defer p.ProductionWaitGroup.Done()
+		for range p.AsyncClient.Errors() {
+			p.FailureCount++
+		}
+	}()
+
+	err := <-p.ErrorChan
+	fmt.Printf("error on producer logic: %v\n", err)
+}
+
+// listenForSuccess inform waitgroup to increase
+func listenForSuccess(p Producer) {
+	defer p.ProductionWaitGroup.Done()
+	for range p.AsyncClient.Successes() {
+		p.SuccessCount++
 	}
 }
 
-// listenForSuccess prints success sent messaes
-func listenForSuccess(asyncProducer sarama.AsyncProducer, pwg *sync.WaitGroup) {
-	msg := <-asyncProducer.Successes()
-	fmt.Println(msg)
-	pwg.Done()
-}
-
-func produce(producer sarama.AsyncProducer, pwg *sync.WaitGroup, errorChan chan error) {
+func produce(p Producer) {
 	// generate any data
 	r := data.Record{
 		Value: "teste",
@@ -103,7 +117,7 @@ func produce(producer sarama.AsyncProducer, pwg *sync.WaitGroup, errorChan chan 
 	// marshals into bytes
 	br, err := json.Marshal(r)
 	if err != nil {
-		errorChan <- err
+		p.ErrorChan <- err
 	}
 
 	// build message
@@ -117,8 +131,6 @@ func produce(producer sarama.AsyncProducer, pwg *sync.WaitGroup, errorChan chan 
 	}
 
 	// send message to channel to be sent to kafka broker
-	producer.Input() <- &msg
-
-	// increment wait group who controls producer messages
-	pwg.Add(1)
+	p.AsyncClient.Input() <- &msg
+	p.EnqueuedCount++
 }
