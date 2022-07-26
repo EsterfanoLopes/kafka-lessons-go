@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"log"
 	"os"
 	"sync"
 	"time"
@@ -15,7 +14,6 @@ import (
 
 type Producer struct {
 	AsyncClient         sarama.AsyncProducer
-	Logger              *log.Logger
 	ErrorChan           chan error
 	ProductionWaitGroup *sync.WaitGroup
 	NumberOfMessages    int
@@ -24,10 +22,6 @@ type Producer struct {
 const (
 	numberOfMessages = 10
 )
-
-func InitLogger() *log.Logger {
-	return log.New(os.Stdout, "INFO\t", log.Ldate|log.Ltime)
-}
 
 /*
  InitProducerConfig
@@ -41,8 +35,6 @@ func InitProducerConfig() Producer {
 		errorChan = make(chan error, 1)
 	)
 
-	logger := InitLogger()
-
 	asyncProducer, err := sarama.NewAsyncProducer(config.Cfg.Addresses, config.Cfg.SaramaConfig)
 	if err != nil {
 		panic(err)
@@ -53,12 +45,12 @@ func InitProducerConfig() Producer {
 		ErrorChan:           errorChan,
 		ProductionWaitGroup: &productionWaitGroup,
 		NumberOfMessages:    numberOfMessages,
-		Logger:              logger,
 	}
 }
 
 func main() {
-	config.KafkaInit()
+	config.Init()
+
 	p := InitProducerConfig()
 
 	/* Routines */
@@ -70,7 +62,7 @@ func main() {
 	for i := 0; i < p.NumberOfMessages; i++ {
 		// increment wait group who controls producer messages
 		p.ProductionWaitGroup.Add(1)
-		p.Logger.Println("Sending message ", i)
+		config.Cfg.Logger.Println("Sending message ", i)
 		go produce(p)
 	}
 
@@ -85,7 +77,7 @@ func shutdown(p Producer) {
 	p.AsyncClient.AsyncClose()
 	close(InitProducerConfig().ErrorChan)
 
-	p.Logger.Println("Finishing")
+	config.Cfg.Logger.Println("Finishing")
 	os.Exit(0)
 }
 
@@ -98,7 +90,7 @@ func listenForErrors(p Producer) {
 	}()
 
 	err := <-p.ErrorChan
-	p.Logger.Printf("error on producer logic: %v\n", err)
+	config.Cfg.Logger.Printf("error on producer logic: %v\n", err)
 }
 
 // listenForSuccess inform waitgroup to increase
