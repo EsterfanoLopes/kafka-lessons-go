@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -15,18 +15,19 @@ import (
 
 type Producer struct {
 	AsyncClient         sarama.AsyncProducer
+	Logger              *log.Logger
 	ErrorChan           chan error
 	ProductionWaitGroup *sync.WaitGroup
 	NumberOfMessages    int
-	EnqueuedCount       int
-	SentCount           int
-	SuccessCount        int
-	FailureCount        int
 }
 
 const (
 	numberOfMessages = 10
 )
+
+func InitLogger() *log.Logger {
+	return log.New(os.Stdout, "INFO\t", log.Ldate|log.Ltime)
+}
 
 /*
  InitProducerConfig
@@ -40,6 +41,8 @@ func InitProducerConfig() Producer {
 		errorChan = make(chan error, 1)
 	)
 
+	logger := InitLogger()
+
 	asyncProducer, err := sarama.NewAsyncProducer(config.Cfg.Addresses, config.Cfg.SaramaConfig)
 	if err != nil {
 		panic(err)
@@ -50,6 +53,7 @@ func InitProducerConfig() Producer {
 		ErrorChan:           errorChan,
 		ProductionWaitGroup: &productionWaitGroup,
 		NumberOfMessages:    numberOfMessages,
+		Logger:              logger,
 	}
 }
 
@@ -66,15 +70,13 @@ func main() {
 	for i := 0; i < p.NumberOfMessages; i++ {
 		// increment wait group who controls producer messages
 		p.ProductionWaitGroup.Add(1)
+		p.Logger.Println("Sending message ", i)
 		go produce(p)
 	}
 
-	go func() {
-		time.Sleep(time.Second * 5)
-		go shutdown(p)
-	}()
-
+	// wait all messages be processed
 	p.ProductionWaitGroup.Wait()
+
 	// Shutdown
 	go shutdown(p)
 }
@@ -83,28 +85,26 @@ func shutdown(p Producer) {
 	p.AsyncClient.AsyncClose()
 	close(InitProducerConfig().ErrorChan)
 
-	fmt.Printf("\n\nFinishing: \nenqueued:%d\nsent:%d\nsuccesses:%d\nfailures:%d", p.EnqueuedCount, p.SentCount, p.SuccessCount, p.FailureCount)
+	p.Logger.Println("Finishing")
 	os.Exit(0)
 }
 
 // listenForErrors waits on error channels, prints it if received.
 func listenForErrors(p Producer) {
 	go func() {
-		defer p.ProductionWaitGroup.Done()
 		for range p.AsyncClient.Errors() {
-			p.FailureCount++
+			p.ProductionWaitGroup.Done()
 		}
 	}()
 
 	err := <-p.ErrorChan
-	fmt.Printf("error on producer logic: %v\n", err)
+	p.Logger.Printf("error on producer logic: %v\n", err)
 }
 
 // listenForSuccess inform waitgroup to increase
 func listenForSuccess(p Producer) {
-	defer p.ProductionWaitGroup.Done()
 	for range p.AsyncClient.Successes() {
-		p.SuccessCount++
+		p.ProductionWaitGroup.Done()
 	}
 }
 
@@ -132,5 +132,4 @@ func produce(p Producer) {
 
 	// send message to channel to be sent to kafka broker
 	p.AsyncClient.Input() <- &msg
-	p.EnqueuedCount++
 }
